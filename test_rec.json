@@ -1,0 +1,130 @@
+{
+    "channels": [
+        {
+            "ConnectorSelect": "BNC",
+            "bandwidth": "51.2 kHz",
+            "ccld": true,
+            "channel": 1,
+            "enabled": true,
+            "filter": "7.0 Hz",
+            "floating": false,
+            "name": "Channel 1",
+            "polvolt": false,
+            "range": "10 Vpeak",
+            "transducer": {
+                "isCharge": false,
+                "sensitivity": 0.05663238595130365,
+                "serialNumber": "3043294",
+                "type": {
+                    "model": "",
+                    "number": "4961",
+                    "prefix": "",
+                    "variant": ""
+                },
+                "unit": "Pa"
+            }
+        },
+        {
+            "ConnectorSelect": "BNC",
+            "bandwidth": "51.2 kHz",
+            "ccld": false,
+            "channel": 2,
+            "enabled": false,
+            "filter": "7.0 Hz",
+            "floating": false,
+            "name": "Channel 2",
+            "polvolt": false,
+            "range": "10 Vpeak",
+            "transducer": {
+                "isCharge": false,
+                "sensitivity": 1,
+                "serialNumber": "",
+                "type": {
+                    "model": "",
+                    "number": "None",
+                    "prefix": "",
+                    "variant": ""
+                },
+                "unit": "V"
+            }
+        },
+        {
+            "ConnectorSelect": "BNC",
+            "bandwidth": "51.2 kHz",
+            "ccld": false,
+            "channel": 3,
+            "enabled": false,
+            "filter": "7.0 Hz",
+            "floating": false,
+            "name": "Channel 3",
+            "polvolt": false,
+            "range": "10 Vpeak",
+            "transducer": {
+                "isCharge": false,
+                "sensitivity": 1,
+                "serialNumber": "",
+                "type": {
+                    "model": "",
+                    "number": "None",
+                    "prefix": "",
+                    "variant": ""
+                },
+                "unit": "V"
+            }
+        },
+        {
+            "ConnectorSelect": "BNC",
+            "bandwidth": "51.2 kHz",
+            "ccld": false,
+            "channel": 4,
+            "enabled": false,
+            "filter": "7.0 Hz",
+            "floating": false,
+            "name": "Channel 4",
+            "polvolt": false,
+            "range": "10 Vpeak",
+            "transducer": {
+                "isCharge": false,
+                "sensitivity": 1,
+                "serialNumber": "",
+                "type": {
+                    "model": "",
+                    "number": "None",
+                    "prefix": "",
+                    "variant": ""
+                },
+                "unit": "V"
+            }
+        }
+    ],
+    "datetime": 1791802594785,
+    "fileFormat": "wav",
+    "maxSize": 2147483648,
+    "module": {
+        "frontpanel": {
+            "serial": 105898,
+            "type": {
+                "model": "",
+                "number": "2100",
+                "prefix": "UA",
+                "variant": "060"
+            },
+            "version": {
+                "hardware": "1.0.0.0"
+            }
+        },
+        "serial": 105145,
+        "type": {
+            "model": "A",
+            "number": "3160",
+            "prefix": "",
+            "variant": "042"
+        },
+        "version": {
+            "firmware": "2.10.0.1173",
+            "hardware": "2.1.0.0"
+        }
+    },
+    "name": "test_run_1210",
+    "recordingMode": "Single"
+}
