@@ -106,7 +106,8 @@ class LanXiRecorderClient:
         self.sync_state()
 
     def _log(self, message):
-        print(f"{int(time.time())}: {message}")
+        readable_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        print(f"{readable_time}: {message}")
 
     def sync_state(self):
         try:
@@ -261,4 +262,10 @@ class LanXiRecorderClient:
         self.sync_state()
         self._log(f"Current FSM confirmed state: {self.state.value}")
         return self.state == ModuleState.IDLE
+
+    def display_current_state(self):
+        """Fetches and displays the current FSM state of the device."""
+        self.sync_state()
+        self._log(f"Current FSM state: {self.state.value}")
+        return self.state
 
