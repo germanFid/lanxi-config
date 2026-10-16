@@ -5,9 +5,7 @@ import os
 from enum import Enum
 from functools import wraps
 
-# For dataclass definitions
-from dataclasses import dataclass, field, asdict
-from typing import List, Optional
+from lanxi_datamodel import *
 
 class ModuleState(Enum):
     IDLE = "Idle"
@@ -28,74 +26,6 @@ TRANSITIONS = {
     "finish_session":  {"from_states": [ModuleState.RECORDER_STREAMING, ModuleState.RECORDER_CONFIGURING], "to_state": ModuleState.RECORDER_OPENED},
     "close_recorder":  {"from_states": [ModuleState.RECORDER_OPENED], "to_state": ModuleState.IDLE},
 }
-
-def transition(func):
-    """Декоратор для автоматической валидации и выполнения переходов FSM."""
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        rule = TRANSITIONS.get(func.__name__)
-        if not rule:
-            return func(self, *args, **kwargs)
-
-        self.sync_state()
-        
-        # Если мы уже находимся в целевом состоянии (например, повторный open_recorder)
-        if self.state == rule["to_state"]:
-            return True
-            
-        # Проверка валидности текущего состояния для этого шага
-        if self.state not in rule["from_states"]:
-            allowed = [s.value for s in rule["from_states"]]
-            self._log(f"FSM Blocked '{func.__name__}': state is '{self.state.value}', but must be one of {allowed}")
-            return False
-
-        # Выполняем саму сетевую операцию
-        if func(self, *args, **kwargs):
-            self.state = rule["to_state"]
-            return True
-        return False
-    return wrapper
-
-# --- OBJECT MODELS ---
-@dataclass
-class TransducerType:
-    model: str = ""
-    number: str = "None"
-    prefix: str = ""
-    variant: str = ""
-
-@dataclass
-class TransducerConfig:
-    requiresCcld: bool = False
-    requires200V: bool = False
-    sensitivity: float = 1.0
-    serialNumber: int = 0
-    type: TransducerType = field(default_factory=TransducerType)
-    unit: str = "V"
-
-@dataclass
-class ChannelConfig:
-    channel: int
-    name: str
-    enabled: bool = True
-    range: str = "10 Vpeak"
-    filter: str = "7.0 Hz"
-    floating: bool = False
-    ccld: bool = False
-    destinations: List[str] = field(default_factory=lambda: ["sd"])
-    bandwidth: str = "51.2 kHz"
-    transducer: Optional[TransducerConfig] = field(default_factory=TransducerConfig)
-
-@dataclass
-class ModuleConfig:
-    name: str = "test_run"
-    fileFormat: str = "wav"
-    maxSize: int = 2147483648
-    recordingMode: str = "Single"
-    channels: List[ChannelConfig] = field(default_factory=list)
-
-    def to_dict(self):
-        return asdict(self)
 
 class LanXiRecorderClient:
     def __init__(self, ip_address):
@@ -186,7 +116,6 @@ class LanXiRecorderClient:
             self.close_recorder()
         return self.state == ModuleState.IDLE
 
-    # Вспомогательные файловые методы остаются без изменений
     def get_stored_recordings(self):
         self._log("Fetching stored configurations from device...")
         try:
@@ -224,31 +153,26 @@ class LanXiRecorderClient:
     def force_reset_to_idle(self):
         self._log("Initiating forced hard reset to Idle state...")
         
-        # 1. Принудительно гасим генераторы, если они были активны
         try:
             requests.put(f"{self.base_url}/generator/stop", timeout=2)
         except requests.exceptions.RequestException:
             pass
 
-        # 2. Принудительно останавливаем запись / стриминг (Recording -> Streaming)
         try:
             requests.put(f"{self.base_url}/measurements/stop", timeout=2)
         except requests.exceptions.RequestException:
             pass
             
-        # 3. Безусловно закрываем сессию каналов (Streaming/Configuring -> Opened)
         try:
             requests.put(f"{self.base_url}/finish", timeout=2)
         except requests.exceptions.RequestException:
             pass
             
-        # 4. Если прибор застрял внутри экрана создания '/create', сбрасываем конфигуратор
         try:
             requests.put(f"{self.base_url}/cancel", timeout=2)
         except requests.exceptions.RequestException:
             pass
 
-        # 5. Окончательно выгружаем приложение рекордера (Opened -> Idle)
         try:
             res = requests.put(f"{self.base_url}/close", timeout=2)
             if res.status_code == 200:
@@ -258,7 +182,6 @@ class LanXiRecorderClient:
         except requests.exceptions.RequestException as e:
             self._log(f"Network error during hard reset: {e}")
             
-        # Синхронизируем итоговое состояние FSM с прибором
         self.sync_state()
         self._log(f"Current FSM confirmed state: {self.state.value}")
         return self.state == ModuleState.IDLE
