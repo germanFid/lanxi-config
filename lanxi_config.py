@@ -2,25 +2,146 @@ import requests
 import json
 import time
 import os
+from enum import Enum
+from functools import wraps
+
+class ModuleState(Enum):
+    IDLE = "Idle"
+    RECORDER_OPENED = "RecorderOpened"
+    RECORDER_CONFIGURING = "RecorderConfiguring"
+    RECORDER_STREAMING = "RecorderStreaming"
+    RECORDER_RECORDING = "RecorderRecording"
+    RECORDER_DOWNLOADING = "RecorderDownloading"
+    UNKNOWN = "Unknown"
+
+# Декларативная карта: какой метод из какого исходного состояния в какое целевое переводит прибор
+TRANSITIONS = {
+    "open_recorder":   {"from_states": [ModuleState.IDLE], "to_state": ModuleState.RECORDER_OPENED},
+    "create_session":  {"from_states": [ModuleState.RECORDER_OPENED], "to_state": ModuleState.RECORDER_CONFIGURING},
+    "submit_channels": {"from_states": [ModuleState.RECORDER_CONFIGURING], "to_state": ModuleState.RECORDER_STREAMING},
+    "start_recording": {"from_states": [ModuleState.RECORDER_STREAMING], "to_state": ModuleState.RECORDER_RECORDING},
+    "stop_recording":  {"from_states": [ModuleState.RECORDER_RECORDING], "to_state": ModuleState.RECORDER_STREAMING},
+    "finish_session":  {"from_states": [ModuleState.RECORDER_STREAMING, ModuleState.RECORDER_CONFIGURING], "to_state": ModuleState.RECORDER_OPENED},
+    "close_recorder":  {"from_states": [ModuleState.RECORDER_OPENED], "to_state": ModuleState.IDLE},
+}
+
+def transition(func):
+    """Декоратор для автоматической валидации и выполнения переходов FSM."""
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        rule = TRANSITIONS.get(func.__name__)
+        if not rule:
+            return func(self, *args, **kwargs)
+
+        self.sync_state()
+        
+        # Если мы уже находимся в целевом состоянии (например, повторный open_recorder)
+        if self.state == rule["to_state"]:
+            return True
+            
+        # Проверка валидности текущего состояния для этого шага
+        if self.state not in rule["from_states"]:
+            allowed = [s.value for s in rule["from_states"]]
+            self._log(f"FSM Blocked '{func.__name__}': state is '{self.state.value}', but must be one of {allowed}")
+            return False
+
+        # Выполняем саму сетевую операцию
+        if func(self, *args, **kwargs):
+            self.state = rule["to_state"]
+            return True
+        return False
+    return wrapper
 
 class LanXiRecorderClient:
     def __init__(self, ip_address):
         self.ip = ip_address
         self.base_url = f"http://{self.ip}/rest/rec"
         self.headers = {'Content-Type': 'application/json'}
+        self.state = ModuleState.UNKNOWN
+        self.sync_state()
 
     def _log(self, message):
         print(f"{int(time.time())}: {message}")
 
+    def sync_state(self):
+        try:
+            response = requests.get(f"{self.base_url}/module/info", timeout=3)
+            if response.status_code == 200:
+                state_str = response.json().get("moduleState", "Idle")
+                self.state = ModuleState(state_str) if state_str in [s.value for s in ModuleState] else ModuleState.UNKNOWN
+                return self.state
+        except requests.exceptions.RequestException:
+            self.state = ModuleState.UNKNOWN
+        return self.state
+
+    @transition
+    def open_recorder(self):
+        self._log("Opening recorder application...")
+        res = requests.put(f"{self.base_url}/open", json={"performTransducerDetection": False, "singleModule": True})
+        return res.status_code == 200
+
+    @transition
+    def create_session(self):
+        self._log("Initializing configuration session...")
+        res = requests.put(f"{self.base_url}/create")
+        return res.status_code == 200
+
+    @transition
+    def submit_channels(self, config_dict):
+        self._log("Applying JSON configuration to device...")
+        res = requests.put(f"{self.base_url}/channels/input", data=json.dumps(config_dict), headers=self.headers)
+        return res.status_code == 200
+
+    @transition
+    def start_recording(self):
+        self._log("Starting hardware recording to SD card...")
+        res = requests.post(f"{self.base_url}/measurements")
+        return res.status_code == 200
+
+    @transition
+    def stop_recording(self):
+        self._log("Stopping active recording...")
+        res = requests.put(f"{self.base_url}/measurements/stop")
+        return res.status_code == 200
+
+    @transition
+    def finish_session(self):
+        self._log("Finishing current recording session...")
+        res = requests.put(f"{self.base_url}/finish")
+        return res.status_code == 200
+
+    @transition
+    def close_recorder(self):
+        self._log("Closing recorder application...")
+        res = requests.put(f"{self.base_url}/close")
+        return res.status_code == 200
+
+    def apply_configuration(self, config_dict):
+        """Высокоуровневый сценарий настройки прибора."""
+        self.sync_state()
+        if self.state in [ModuleState.RECORDER_STREAMING, ModuleState.RECORDER_RECORDING]:
+            self.stop_and_close()
+            
+        return self.open_recorder() and self.create_session() and self.submit_channels(config_dict)
+
+    def stop_and_close(self):
+        """Высокоуровневый сценарий последовательного сброса до уровня Idle."""
+        self.sync_state()
+        if self.state == ModuleState.RECORDER_RECORDING:
+            self.stop_recording()
+        if self.state in [ModuleState.RECORDER_STREAMING, ModuleState.RECORDER_CONFIGURING]:
+            self.finish_session()
+        if self.state == ModuleState.RECORDER_OPENED:
+            self.close_recorder()
+        return self.state == ModuleState.IDLE
+
+    # Вспомогательные файловые методы остаются без изменений
     def get_stored_recordings(self):
         self._log("Fetching stored configurations from device...")
         try:
             response = requests.get(f"{self.base_url}/measurements")
             if response.status_code == 200:
-                recordings = response.json()
-                self._log(f"Found {len(recordings)} stored configurations.")
-                return recordings
-            self._log(f"Failed to fetch stored configurations. Status code: {response.status_code}")
+                return response.json()
         except requests.exceptions.RequestException as e:
             self._log(f"Network error: {e}")
         return None
@@ -28,86 +149,23 @@ class LanXiRecorderClient:
     def save_device_config_to_json(self, file_path="atomic_config.json", recording=None):
         if recording is None:
             recordings = self.get_stored_recordings()
-            if not recordings:
-                self._log("No configurations available to save.")
-                return False
+            if not recordings: return False
             recording = recordings[-1]
-        
         atomic_config = recording.get("setup", {})
-        
-        if not atomic_config or "channels" not in atomic_config:
-            self._log("Latest recording does not contain a valid channel setup configuration.")
-            return False
-            
+        if not atomic_config or "channels" not in atomic_config: return False
         try:
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(atomic_config, f, indent=4, ensure_ascii=False)
-            self._log(f"Successfully saved latest atomic configuration to: {file_path}")
             return True
-        except IOError as e:
-            self._log(f"File write error: {e}")
+        except IOError:
             return False
 
     def load_and_apply_config_from_json(self, file_path):
-        if not os.path.exists(file_path):
-            self._log(f"Configuration file not found: {file_path}")
-            return False
-            
+        if not os.path.exists(file_path): return False
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 config_to_apply = json.load(f)
-            
-            # Проверяем, что это атомарный объект конфигурации, а не массив
-            if not isinstance(config_to_apply, dict) or "channels" not in config_to_apply:
-                self._log("Invalid atomic configuration format in JSON file.")
-                return False
-
-            self._log(f"Loaded atomic configuration '{config_to_apply.get('name')}' from file.")
+            if not isinstance(config_to_apply, dict) or "channels" not in config_to_apply: return False
             return self.apply_configuration(config_to_apply)
-            
-        except json.JSONDecodeError as e:
-            self._log(f"Failed to parse JSON file: {e}")
+        except (json.JSONDecodeError, IOError):
             return False
-        except IOError as e:
-            self._log(f"File read error: {e}")
-            return False
-
-    def apply_configuration(self, config_dict):
-        self._log("Opening recorder application...")
-        res_open = requests.put(f"{self.base_url}/open", json={"performTransducerDetection": False, "singleModule": True})
-        if res_open.status_code != 200:
-            self._log(f"Recorder open warning. Status code: {res_open.status_code}")
-
-        self._log("Initializing configuration session...")
-        res_create = requests.put(f"{self.base_url}/create")
-        if res_create.status_code != 200:
-            self._log(f"Failed to initialize session. Status code: {res_create.status_code}")
-            return False
-
-        self._log("Applying JSON configuration to device...")
-        res_config = requests.put(f"{self.base_url}/channels/input", data=json.dumps(config_dict), headers=self.headers)
-        if res_config.status_code == 200:
-            self._log("Configuration successfully applied. Device state: RecorderStreaming")
-            return True
-            
-        self._log(f"Failed to apply configuration. Status code: {res_config.status_code}")
-        self._log(f"Device response: {res_config.text}")
-        return False
-
-    def stop_and_close(self):
-        self._log("Stopping recording and closing recorder session...")
-        requests.put(f"{self.base_url}/measurements/stop")
-        
-        res_finish = requests.put(f"{self.base_url}/finish")
-        if res_finish.status_code == 200:
-            self._log("Recording session finished. State: RecorderOpened")
-        else:
-            self._log(f"Failed to finish session. Status code: {res_finish.status_code}")
-
-        res_close = requests.put(f"{self.base_url}/close")
-        if res_close.status_code == 200:
-            self._log("Recorder application closed. Device state: Idle")
-            return True
-            
-        self._log(f"Failed to close recorder. Status code: {res_close.status_code}")
-        return False
