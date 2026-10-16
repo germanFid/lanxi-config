@@ -1,6 +1,9 @@
 # For dataclass definitions
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional
+from functools import wraps
+
+from lanxi_config import TRANSITIONS
 
 def transition(func):
     """Декоратор для автоматической валидации и выполнения переходов FSM."""
