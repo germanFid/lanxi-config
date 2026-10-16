@@ -5,6 +5,10 @@ import os
 from enum import Enum
 from functools import wraps
 
+# For dataclass definitions
+from dataclasses import dataclass, field, asdict
+from typing import List, Optional
+
 class ModuleState(Enum):
     IDLE = "Idle"
     RECORDER_OPENED = "RecorderOpened"
@@ -52,6 +56,47 @@ def transition(func):
         return False
     return wrapper
 
+# --- OBJECT MODELS ---
+@dataclass
+class TransducerType:
+    model: str = ""
+    number: str = "None"
+    prefix: str = ""
+    variant: str = ""
+
+@dataclass
+class TransducerConfig:
+    requiresCcld: bool = False
+    requires200V: bool = False
+    sensitivity: float = 1.0
+    serialNumber: int = 0
+    type: TransducerType = field(default_factory=TransducerType)
+    unit: str = "V"
+
+@dataclass
+class ChannelConfig:
+    channel: int
+    name: str
+    enabled: bool = True
+    range: str = "10 Vpeak"
+    filter: str = "7.0 Hz"
+    floating: bool = False
+    ccld: bool = False
+    destinations: List[str] = field(default_factory=lambda: ["sd"])
+    bandwidth: str = "51.2 kHz"
+    transducer: Optional[TransducerConfig] = field(default_factory=TransducerConfig)
+
+@dataclass
+class ModuleConfig:
+    name: str = "test_run"
+    fileFormat: str = "wav"
+    maxSize: int = 2147483648
+    recordingMode: str = "Single"
+    channels: List[ChannelConfig] = field(default_factory=list)
+
+    def to_dict(self):
+        return asdict(self)
+
 class LanXiRecorderClient:
     def __init__(self, ip_address):
         self.ip = ip_address
@@ -90,7 +135,17 @@ class LanXiRecorderClient:
     def submit_channels(self, config_dict):
         self._log("Applying JSON configuration to device...")
         res = requests.put(f"{self.base_url}/channels/input", data=json.dumps(config_dict), headers=self.headers)
-        return res.status_code == 200
+        if res.status_code == 200:
+            self.state = ModuleState.RECORDER_STREAMING
+            self._log("Configuration successfully applied. Device state: RecorderStreaming")
+            return True
+            
+        self._log(f"Device rejected config! HTTP Status: {res.status_code}")
+        try:
+            self._log(f"Device Message: {res.json()}")
+        except Exception:
+            self._log(f"Device Raw Response: {res.text}")
+        return False
 
     @transition
     def start_recording(self):
@@ -117,18 +172,13 @@ class LanXiRecorderClient:
         return res.status_code == 200
 
     def apply_configuration(self, config_dict):
-        """Высокоуровневый сценарий настройки прибора."""
         self.sync_state()
         if self.state in [ModuleState.RECORDER_STREAMING, ModuleState.RECORDER_RECORDING]:
             self.stop_and_close()
-            
         return self.open_recorder() and self.create_session() and self.submit_channels(config_dict)
 
     def stop_and_close(self):
-        """Высокоуровневый сценарий последовательного сброса до уровня Idle."""
         self.sync_state()
-        if self.state == ModuleState.RECORDER_RECORDING:
-            self.stop_recording()
         if self.state in [ModuleState.RECORDER_STREAMING, ModuleState.RECORDER_CONFIGURING]:
             self.finish_session()
         if self.state == ModuleState.RECORDER_OPENED:
@@ -169,3 +219,46 @@ class LanXiRecorderClient:
             return self.apply_configuration(config_to_apply)
         except (json.JSONDecodeError, IOError):
             return False
+
+    def force_reset_to_idle(self):
+        self._log("Initiating forced hard reset to Idle state...")
+        
+        # 1. Принудительно гасим генераторы, если они были активны
+        try:
+            requests.put(f"{self.base_url}/generator/stop", timeout=2)
+        except requests.exceptions.RequestException:
+            pass
+
+        # 2. Принудительно останавливаем запись / стриминг (Recording -> Streaming)
+        try:
+            requests.put(f"{self.base_url}/measurements/stop", timeout=2)
+        except requests.exceptions.RequestException:
+            pass
+            
+        # 3. Безусловно закрываем сессию каналов (Streaming/Configuring -> Opened)
+        try:
+            requests.put(f"{self.base_url}/finish", timeout=2)
+        except requests.exceptions.RequestException:
+            pass
+            
+        # 4. Если прибор застрял внутри экрана создания '/create', сбрасываем конфигуратор
+        try:
+            requests.put(f"{self.base_url}/cancel", timeout=2)
+        except requests.exceptions.RequestException:
+            pass
+
+        # 5. Окончательно выгружаем приложение рекордера (Opened -> Idle)
+        try:
+            res = requests.put(f"{self.base_url}/close", timeout=2)
+            if res.status_code == 200:
+                self._log("Device successfully forced into Idle state.")
+            else:
+                self._log(f"Close signal sent, device response status: {res.status_code}")
+        except requests.exceptions.RequestException as e:
+            self._log(f"Network error during hard reset: {e}")
+            
+        # Синхронизируем итоговое состояние FSM с прибором
+        self.sync_state()
+        self._log(f"Current FSM confirmed state: {self.state.value}")
+        return self.state == ModuleState.IDLE
+
