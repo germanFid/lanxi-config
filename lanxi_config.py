@@ -2,29 +2,10 @@ import requests
 import json
 import time
 import os
-from enum import Enum
 
 from lanxi_datamodel import *
-
-class ModuleState(Enum):
-    IDLE = "Idle"
-    RECORDER_OPENED = "RecorderOpened"
-    RECORDER_CONFIGURING = "RecorderConfiguring"
-    RECORDER_STREAMING = "RecorderStreaming"
-    RECORDER_RECORDING = "RecorderRecording"
-    RECORDER_DOWNLOADING = "RecorderDownloading"
-    UNKNOWN = "Unknown"
-
-# Декларативная карта: какой метод из какого исходного состояния в какое целевое переводит прибор
-TRANSITIONS = {
-    "open_recorder":   {"from_states": [ModuleState.IDLE], "to_state": ModuleState.RECORDER_OPENED},
-    "create_session":  {"from_states": [ModuleState.RECORDER_OPENED], "to_state": ModuleState.RECORDER_CONFIGURING},
-    "submit_channels": {"from_states": [ModuleState.RECORDER_CONFIGURING], "to_state": ModuleState.RECORDER_STREAMING},
-    "start_recording": {"from_states": [ModuleState.RECORDER_STREAMING], "to_state": ModuleState.RECORDER_RECORDING},
-    "stop_recording":  {"from_states": [ModuleState.RECORDER_RECORDING], "to_state": ModuleState.RECORDER_STREAMING},
-    "finish_session":  {"from_states": [ModuleState.RECORDER_STREAMING, ModuleState.RECORDER_CONFIGURING], "to_state": ModuleState.RECORDER_OPENED},
-    "close_recorder":  {"from_states": [ModuleState.RECORDER_OPENED], "to_state": ModuleState.IDLE},
-}
+from lanxi_moduleinfo import DeviceInfo
+from lanxi_validation import ConfigurationValidator, ValidationError
 
 class LanXiRecorderClient:
     def __init__(self, ip_address):
@@ -63,16 +44,41 @@ class LanXiRecorderClient:
 
     @transition
     def submit_channels(self, config_dict):
-        self._log("Applying JSON configuration to device...")
+        self.sync_state()
+        
+        # 1. Получаем аппаратный профиль устройства
+        try:
+            info_res = requests.get(f"{self.base_url}/module/info", timeout=3)
+            if info_res.status_code == 200:
+                # Оборачиваем сырой JSON ответа в строго типизированный класс DeviceInfo
+                device_capabilities = DeviceInfo.from_dict(info_res.json())
+            else:
+                self._log("Aborting configuration: Unable to fetch module capability info.")
+                return False
+        except requests.exceptions.RequestException as e:
+            self._log(f"Network error during pre-validation: {e}")
+            return False
+
+        # 2. Локальная расширяемая пре-валидация перед отправкой на железо
+        validator = ConfigurationValidator()
+        try:
+            validator.run_all(config_dict, device_capabilities)
+        except ValidationError as e:
+            self._log(f"Local Validation Blocked: {e}")
+            return False  # Прерываем отправку, FSM остается в безопасности
+
+        # 3. Отправка проверенного JSON-пакета на прибор
+        self._log("Local validation passed. Applying JSON configuration to device...")
         res = requests.put(f"{self.base_url}/channels/input", data=json.dumps(config_dict), headers=self.headers)
+        
         if res.status_code == 200:
             self.state = ModuleState.RECORDER_STREAMING
             self._log("Configuration successfully applied. Device state: RecorderStreaming")
             return True
             
-        self._log(f"Device rejected config! HTTP Status: {res.status_code}")
+        self._log(f"Device rejected config despite local validation. Status: {res.status_code}")
         try:
-            self._log(f"Device Message: {res.json()}")
+            self._log(f"Device Error Message: {res.json()}")
         except Exception:
             self._log(f"Device Raw Response: {res.text}")
         return False

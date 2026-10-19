@@ -17,39 +17,32 @@ class ValidationRule:
 
 class SupportedFeatureRule(ValidationRule):
     def __init__(self, feature_name: str, config_selector):
-        """
-        feature_name: Имя поля из класса DeviceInfo (например, 'supportedFilters', 'supportedRanges').
-        config_selector: Функция/лямбда, извлекающая проверяемое значение из JSON конфигурации.
-        """
         self.feature_name = feature_name
         self.config_selector = config_selector
 
     def validate(self, config: dict, device_info: 'DeviceInfo') -> bool:
-        # 1. Извлекаем список поддерживаемых фич из строго типизированного DeviceInfo
         allowed_values = getattr(device_info, self.feature_name, None)
         
         if allowed_values is None:
             raise ValidationError(f"Feature '{self.feature_name}' is not supported or present on this hardware.")
-            
-        if not isinstance(allowed_values, list):
-            raise ValidationError(f"Feature '{self.feature_name}' on device is not a valid list collection.")
-            
         if len(allowed_values) == 0:
             raise ValidationError(f"Device reports that feature '{self.feature_name}' has no available options.")
 
-        # 2. Извлекаем значение, которое пользователь пытается применить в конфигурации
         try:
             requested_value = self.config_selector(config)
         except (KeyError, IndexError, TypeError):
-            # Если параметра нет в JSON, значит пользователь его не настраивает (например, канал выключен)
             return True
 
-        # 3. Валидируем запрошенное значение против аппаратного списка прибора
-        if requested_value not in allowed_values:
-            raise ValidationError(
-                f"Hardware limitation breach! Value '{requested_value}' is not supported for '{self.feature_name}'. "
-                f"Supported values by this module: {allowed_values}"
-            )
+        # --- ИСПРАВЛЕННЫЙ БЛОК: Проверка одиночного значения или списка значений ---
+        # Превращаем одиночное значение в список для универсальности итерации
+        requested_list = requested_value if isinstance(requested_value, list) else [requested_value]
+
+        for val in requested_list:
+            if val not in allowed_values:
+                raise ValidationError(
+                    f"Hardware limitation breach! Value '{val}' is not supported for '{self.feature_name}'. "
+                    f"Supported values by this module: {allowed_values}"
+                )
         
         return True
 
@@ -72,30 +65,19 @@ class BridgeExcitationRule(ValidationRule):
 
 class ConfigurationValidator:
     def __init__(self):
-        # Настраиваем правила, передавая лямбду для поиска нужного параметра внутри Канала 1
-        self._rules: list[ValidationRule] = [
+        # Проверяем все включенные каналы в цикле через универсальные правила
+        self._rules = [
             SupportedFeatureRule(
                 feature_name="supportedFilters",
-                config_selector=lambda cfg: cfg["channels"][0]["filter"]
+                config_selector=lambda cfg: [ch["filter"] for ch in cfg["channels"] if ch["enabled"]]
             ),
             SupportedFeatureRule(
                 feature_name="supportedRanges",
-                config_selector=lambda cfg: cfg["channels"][0]["range"]
+                config_selector=lambda cfg: [ch["range"] for ch in cfg["channels"] if ch["enabled"]]
             ),
-            SupportedFeatureRule(
-                feature_name="supportedDestinations",
-                config_selector=lambda cfg: cfg["channels"][0]["destinations"][0]
-            ),
-            SupportedFeatureRule(
-                feature_name="supportedSampleRates",
-                # Пример селектора, если бы мы передавали rate напрямую в герцах
-                config_selector=lambda cfg: cfg.get("sampleRate") 
-            ),
-            # Подключаем наше специализированное правило для мостов
             BridgeExcitationRule()
         ]
 
-    def run_all(self, config: dict, device_info: 'DeviceInfo'):
-        """Последовательно запускает всю цепочку проверок. Любой raise прервет валидацию."""
+    def run_all(self, config: dict, device_info: DeviceInfo):
         for rule in self._rules:
             rule.validate(config, device_info)

@@ -3,7 +3,27 @@ from dataclasses import dataclass, field, asdict
 from typing import List, Optional
 from functools import wraps
 
-from lanxi_config import TRANSITIONS
+from enum import Enum
+
+class ModuleState(Enum):
+    IDLE = "Idle"
+    RECORDER_OPENED = "RecorderOpened"
+    RECORDER_CONFIGURING = "RecorderConfiguring"
+    RECORDER_STREAMING = "RecorderStreaming"
+    RECORDER_RECORDING = "RecorderRecording"
+    RECORDER_DOWNLOADING = "RecorderDownloading"
+    UNKNOWN = "Unknown"
+
+# Декларативная карта: какой метод из какого исходного состояния в какое целевое переводит прибор
+TRANSITIONS = {
+    "open_recorder":   {"from_states": [ModuleState.IDLE], "to_state": ModuleState.RECORDER_OPENED},
+    "create_session":  {"from_states": [ModuleState.RECORDER_OPENED], "to_state": ModuleState.RECORDER_CONFIGURING},
+    "submit_channels": {"from_states": [ModuleState.RECORDER_CONFIGURING], "to_state": ModuleState.RECORDER_STREAMING},
+    "start_recording": {"from_states": [ModuleState.RECORDER_STREAMING], "to_state": ModuleState.RECORDER_RECORDING},
+    "stop_recording":  {"from_states": [ModuleState.RECORDER_RECORDING], "to_state": ModuleState.RECORDER_STREAMING},
+    "finish_session":  {"from_states": [ModuleState.RECORDER_STREAMING, ModuleState.RECORDER_CONFIGURING], "to_state": ModuleState.RECORDER_OPENED},
+    "close_recorder":  {"from_states": [ModuleState.RECORDER_OPENED], "to_state": ModuleState.IDLE},
+}
 
 def transition(func):
     """Декоратор для автоматической валидации и выполнения переходов FSM."""
